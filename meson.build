@@ -1,4 +1,4 @@
-project('VIVTC', 'cpp',
+project('VIVTC', 'c',
     default_options: ['buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'c_std=c99'],
     license: 'LGPL-2.1-or-later',
     license_files: 'LICENSE',
