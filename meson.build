@@ -1,20 +1,27 @@
-project('vivtc', 'c', 'cpp',
-  version : '1',
-  default_options : ['warning_level=3', 'buildtype=release', 'b_ndebug=if-release'])
+project('VIVTC', 'cpp',
+    default_options: ['buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'c_std=c99'],
+    license: 'LGPL-2.1-or-later',
+    license_files: 'LICENSE',
+    meson_version: '>=1.2.3',
+    version: '2.0',
+)
 
-add_project_arguments('-ffast-math', language : 'c')
+incdir = include_directories(
+    run_command(
+        find_program('python', 'python3'),
+        '-c',
+        'import vapoursynth as vs; print(vs.get_include())',
+        check: true,
+    ).stdout().strip(),
+)
 
-sources = [
-     'src/vivtc.c'
-]
+py = import('python').find_installation(pure: false)
 
-vapoursynth_dep = dependency('vapoursynth', version: '>=55').partial_dependency(compile_args : true, includes : true)
-
-deps = [vapoursynth_dep]
-
-shared_module('vivtc', sources,
-  dependencies : deps,
-  install : true,
-  install_dir : join_paths(vapoursynth_dep.get_pkgconfig_variable('libdir'), 'vapoursynth'),
-  gnu_symbol_visibility : 'hidden'
+shared_module('vivtc',
+    files('src/vivtc.c'),
+    gnu_symbol_visibility: 'hidden',
+    include_directories: incdir,
+    install: true,
+    install_dir: py.get_install_dir() / 'vapoursynth/plugins',
+    name_prefix: '',
 )
