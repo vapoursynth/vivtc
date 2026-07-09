@@ -413,8 +413,8 @@ static int compareFieldsSlow(const VSFrame *prv, const VSFrame *src, const VSFra
     int stopx;
     int x, y, temp1, temp2, startx, y0a, y1a, tp;
     int stop = mchroma ? 3 : 1;
-    unsigned long accumPc = 0, accumNc = 0, accumPm = 0;
-    unsigned long accumNm = 0, accumPml = 0, accumNml = 0;
+    uint64_t accumPc = 0, accumNc = 0, accumPm = 0;
+    uint64_t accumNm = 0, accumPml = 0, accumNml = 0;
     int norm1, norm2, mtn1, mtn2;
     float c1, c2, mr;
 
@@ -1201,7 +1201,7 @@ static int vdecimateLoadOVR(const char *ovrfile, signed char *drop, int cycle, i
     }
 
     memset(buf, 0, sizeof(buf));
-    while (fgets(buf, 80, moo)) {
+    while ((buf[78] = 0, fgets(buf, 80, moo))) {
         int frame = -1;
         int frame_start = -1;
         int frame_end = -1;
@@ -1247,7 +1247,7 @@ static int vdecimateLoadOVR(const char *ovrfile, signed char *drop, int cycle, i
             return 1;
         }
 
-        while (buf[78] != 0 && buf[78] != '\n' && fgets(buf, 80, moo)) {
+        while (buf[78] != 0 && buf[78] != '\n' && (buf[78] = 0, fgets(buf, 80, moo))) {
             ; // slurp the rest of a long line
         }
     }
@@ -1420,7 +1420,7 @@ static const VSFrame *VS_CC vdecimateGetFrame(int n, int activationReason, void 
         if (!vdm->dryrun && cycle->durations[n % vdm->outCycle].den == 0) {
             FrameDuration oldDurations[MaxCycleLength];
 
-            for (int i = cyclestart; i < cyclestart + vdm->inCycle; i++) {
+            for (int i = cyclestart; i < cycleend; i++) {
                 const VSFrame *frame = vsapi->getFrameFilter(i, vdm->clip2 ? vdm->clip2 : vdm->node, frameCtx);
                 const VSMap *frameProps = vsapi->getFramePropertiesRO(frame);
                 int err;
@@ -1429,7 +1429,7 @@ static const VSFrame *VS_CC vdecimateGetFrame(int n, int activationReason, void 
                 vsapi->freeFrame(frame);
             }
 
-            calculateNewDurations(oldDurations, cycle->durations, vdm->inCycle, cycle->drop);
+            calculateNewDurations(oldDurations, cycle->durations, cycleend - cyclestart, cycle->drop);
         }
 
         int outputFrame = findOutputFrame(n, cyclestart, vdm->outCycle, cycle->drop, vdm->dryrun);
@@ -1551,7 +1551,7 @@ static void VS_CC createVDecimate(const VSMap *in, VSMap *out, void *userData, V
     int max_value = (1 << vi->format.bitsPerSample) - 1;
     // Casting max_value to int64_t to avoid losing the high 32 bits of the result
     vdm.scthresh = (int64_t)(((int64_t)max_value * vi->width * vi->height * scthresh)/100);
-    vdm.dupthresh = (int64_t)((max_value * vdm.blockx * vdm.blocky * dupthresh)/100);
+    vdm.dupthresh = (int64_t)(((int64_t)max_value * vdm.blockx * vdm.blocky * dupthresh)/100);
 
     vdm.nxblocks = (vdm.vi.width + vdm.blockx/2 - 1)/(vdm.blockx/2);
     vdm.nyblocks = (vdm.vi.height + vdm.blocky/2 - 1)/(vdm.blocky/2);
