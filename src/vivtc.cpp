@@ -75,8 +75,9 @@ static void copyField(VSFrame *dst, const VSFrame *src, int field, const VSAPI *
 }
 
 // the secret is that tbuffer is an interlaced, offset subset of all the lines
-static void buildABSDiffMask(const uint8_t *prvp, const uint8_t *nxtp,
-    ptrdiff_t src_pitch, ptrdiff_t tpitch, uint8_t *tbuffer, int width, int height,
+template<typename T>
+static void buildABSDiffMask(const T *prvp, const T *nxtp,
+    ptrdiff_t src_pitch, ptrdiff_t tpitch, T *tbuffer, int width, int height,
     const VSAPI *vsapi) {
 
     int y, x;
@@ -91,16 +92,19 @@ static void buildABSDiffMask(const uint8_t *prvp, const uint8_t *nxtp,
 }
 
 
+template<typename T>
 static int calcMI(const VSFrame *src, const VSAPI *vsapi,
-    int *blockN, int chroma, int cthresh, VSFrame *cmask, int *cArray, int blockx, int blocky)
+    int *blockN, int chroma, int cthresh, int shift, VSFrame *cmask, int *cArray, int blockx, int blocky)
 {
     int ret = 0;
+    if (cthresh >= 0)
+        cthresh <<= shift;
     const int cthresh6 = cthresh*6;
     int plane;
     int x, y, u, v;
     for (plane=0; plane < (chroma ? 3 : 1); plane++) {
-        const uint8_t *srcp = vsapi->getReadPtr(src, plane);
-        const ptrdiff_t src_pitch = vsapi->getStride(src, plane);
+        const T *srcp = (const T *)vsapi->getReadPtr(src, plane);
+        const ptrdiff_t src_pitch = vsapi->getStride(src, plane) / (ptrdiff_t)sizeof(T);
         const int Width = vsapi->getFrameWidth(src, plane);
         const int Height = vsapi->getFrameHeight(src, plane);
         uint8_t *cmkp = vsapi->getWritePtr(cmask, plane);
@@ -339,12 +343,15 @@ static int calcMI(const VSFrame *src, const VSAPI *vsapi,
 
 
 // build a map over which pixels differ a lot/a little
-static void buildDiffMap(const uint8_t *prvp, const uint8_t *nxtp,
+template<typename T>
+static void buildDiffMap(const T *prvp, const T *nxtp,
                          uint8_t *dstp,ptrdiff_t src_pitch, ptrdiff_t dst_pitch, int Height,
-    int Width, ptrdiff_t tpitch, uint8_t *tbuffer, const VSAPI *vsapi)
+    int Width, ptrdiff_t tpitch, T *tbuffer, int shift, const VSAPI *vsapi)
 {
-    const uint8_t *dp = tbuffer+tpitch;
+    const T *dp = tbuffer+tpitch;
     int x, y, u, diff, count;
+    const int t3 = 3 << shift;
+    const int t19 = 19 << shift;
 
     buildABSDiffMask(prvp-src_pitch, nxtp-src_pitch, src_pitch,
         tpitch, tbuffer, Width, Height>>1, vsapi);
@@ -352,33 +359,33 @@ static void buildDiffMap(const uint8_t *prvp, const uint8_t *nxtp,
     for (y=2; y<Height-2; y+=2) {
         for (x=1; x<Width-1; ++x) {
             diff = dp[x];
-            if (diff > 3) {
+            if (diff > t3) {
                 for (count=0,u=x-1; u<x+2 && count<2; ++u) {
-                    if (dp[u-tpitch] > 3) ++count;
-                    if (dp[u] > 3) ++count;
-                    if (dp[u+tpitch] > 3) ++count;
+                    if (dp[u-tpitch] > t3) ++count;
+                    if (dp[u] > t3) ++count;
+                    if (dp[u+tpitch] > t3) ++count;
                 }
                 if (count > 1) {
                     ++dstp[x];
-                    if (diff > 19) {
+                    if (diff > t19) {
                         int upper = 0, lower = 0;
                         for (count=0, u=x-1; u<x+2 && count<6; ++u) {
-                            if (dp[u-tpitch] > 19) { ++count; upper = 1; }
-                            if (dp[u] > 19) ++count;
-                            if (dp[u+tpitch] > 19) { ++count; lower = 1; }
+                            if (dp[u-tpitch] > t19) { ++count; upper = 1; }
+                            if (dp[u] > t19) ++count;
+                            if (dp[u+tpitch] > t19) { ++count; lower = 1; }
                         }
                         if (count > 3) {
                             if (!upper || !lower) {
                                 int upper2 = 0, lower2 = 0;
                                 for (u=VSMAX(x-4,0); u<VSMIN(x+5,Width); ++u)
                                 {
-                                    if (y != 2 && dp[u-2*tpitch] > 19)
+                                    if (y != 2 && dp[u-2*tpitch] > t19)
                                         upper2 = 1;
-                                    if (dp[u-tpitch] > 19)
+                                    if (dp[u-tpitch] > t19)
                                         upper = 1;
-                                    if (dp[u+tpitch] > 19)
+                                    if (dp[u+tpitch] > t19)
                                         lower = 1;
-                                    if (y != Height-4 && dp[u+2*tpitch] > 19)
+                                    if (y != Height-4 && dp[u+2*tpitch] > t19)
                                         lower2 = 1;
                                 }
                                 if ((upper && (lower || upper2)) ||
@@ -398,13 +405,14 @@ static void buildDiffMap(const uint8_t *prvp, const uint8_t *nxtp,
     }
 }
 
+template<typename T>
 static int compareFieldsSlow(const VSFrame *prv, const VSFrame *src, const VSFrame *nxt, VSFrame *map, int match1,
-    int match2, int mchroma, int field, int y0, int y1, uint8_t *tbuffer, int tpitchy, int tpitchuv, const VSAPI *vsapi)
+    int match2, int mchroma, int field, int y0, int y1, T *tbuffer, int tpitchy, int tpitchuv, int shift, const VSAPI *vsapi)
 {
     int plane, ret;
-    const uint8_t *prvp = 0, *srcp = 0, *nxtp = 0;
-    const uint8_t *curpf = 0, *curf = 0, *curnf = 0;
-    const uint8_t *prvpf = 0, *prvnf = 0, *nxtpf = 0, *nxtnf = 0;
+    const T *prvp = 0, *srcp = 0, *nxtp = 0;
+    const T *curpf = 0, *curf = 0, *curnf = 0;
+    const T *prvpf = 0, *prvnf = 0, *nxtpf = 0, *nxtnf = 0;
     uint8_t *mapp;
     ptrdiff_t src_stride;
     int Width, Height;
@@ -415,20 +423,22 @@ static int compareFieldsSlow(const VSFrame *prv, const VSFrame *src, const VSFra
     int stop = mchroma ? 3 : 1;
     uint64_t accumPc = 0, accumNc = 0, accumPm = 0;
     uint64_t accumNm = 0, accumPml = 0, accumNml = 0;
-    int norm1, norm2, mtn1, mtn2;
+    int64_t norm1, norm2, mtn1, mtn2;
     float c1, c2, mr;
+    const int t23 = 23 << shift;
+    const int t42 = 42 << shift;
 
     const VSVideoFormat *src_fmt = vsapi->getVideoFrameFormat(src);
 
     for (plane=0; plane<stop; ++plane) {
         mapp = vsapi->getWritePtr(map, plane);
         map_pitch = vsapi->getStride(map, plane);
-        prvp = vsapi->getReadPtr(prv, plane);
-        srcp = vsapi->getReadPtr(src, plane);
-        src_stride = vsapi->getStride(src, plane);
+        prvp = (const T *)vsapi->getReadPtr(prv, plane);
+        srcp = (const T *)vsapi->getReadPtr(src, plane);
+        src_stride = vsapi->getStride(src, plane) / (ptrdiff_t)sizeof(T);
         Width = vsapi->getFrameWidth(src, plane);
         Height = vsapi->getFrameHeight(src, plane);
-        nxtp = vsapi->getReadPtr(nxt, plane);
+        nxtp = (const T *)vsapi->getReadPtr(nxt, plane);
         memset(mapp,0,Height*map_pitch);
         startx = (plane == 0 ? 8 : 8 >> src_fmt->subSamplingW);
         stopx = Width - startx;
@@ -479,9 +489,9 @@ static int compareFieldsSlow(const VSFrame *prv, const VSFrame *src, const VSFra
         nxtnf = nxtpf + curf_pitch;
         map_pitch <<= 1;
         if ((match1 >= 3 && field == 1) || (match1 < 3 && field != 1))
-            buildDiffMap(prvpf,nxtpf,mapp,curf_pitch,map_pitch,Height,Width,tp,tbuffer,vsapi);
+            buildDiffMap<T>(prvpf,nxtpf,mapp,curf_pitch,map_pitch,Height,Width,tp,tbuffer,shift,vsapi);
         else
-            buildDiffMap(prvnf,nxtnf,mapp + map_pitch,curf_pitch,map_pitch,Height,Width,tp,tbuffer,vsapi);
+            buildDiffMap<T>(prvnf,nxtnf,mapp + map_pitch,curf_pitch,map_pitch,Height,Width,tp,tbuffer,shift,vsapi);
 
         for (y=2; y<Height-2; y+=2) {
             if (y0a == y1a || y < y0a || y > y1a) {
@@ -489,18 +499,18 @@ static int compareFieldsSlow(const VSFrame *prv, const VSFrame *src, const VSFra
                     if (mapp[x] > 0 || mapp[x + map_pitch] > 0) {
                         temp1 = curpf[x]+(curf[x]<<2)+curnf[x];
                         temp2 = abs(3*(prvpf[x]+prvnf[x])-temp1);
-                        if (temp2 > 23 && ((mapp[x]&1) || (mapp[x + map_pitch]&1)))
+                        if (temp2 > t23 && ((mapp[x]&1) || (mapp[x + map_pitch]&1)))
                             accumPc += temp2;
-                        if (temp2 > 42) {
+                        if (temp2 > t42) {
                             if ((mapp[x]&2) || (mapp[x + map_pitch]&2))
                                 accumPm += temp2;
                             if ((mapp[x]&4) || (mapp[x + map_pitch]&4))
                                 accumPml += temp2;
                         }
                         temp2 = abs(3*(nxtpf[x]+nxtnf[x])-temp1);
-                        if (temp2 > 23 && ((mapp[x]&1) || (mapp[x + map_pitch]&1)))
+                        if (temp2 > t23 && ((mapp[x]&1) || (mapp[x + map_pitch]&1)))
                             accumNc += temp2;
-                        if (temp2 > 42) {
+                        if (temp2 > t42) {
                             if ((mapp[x]&2) || (mapp[x + map_pitch]&2))
                                 accumNm += temp2;
                             if ((mapp[x]&4) || (mapp[x + map_pitch]&4))
@@ -519,29 +529,29 @@ static int compareFieldsSlow(const VSFrame *prv, const VSFrame *src, const VSFra
             mapp += map_pitch;
         }
     }
-    if (accumPm < 500 && accumNm < 500 && (accumPml >= 500 || accumNml >= 500) &&
+    if (accumPm < ((uint64_t)500 << shift) && accumNm < ((uint64_t)500 << shift) && (accumPml >= ((uint64_t)500 << shift) || accumNml >= ((uint64_t)500 << shift)) &&
         VSMAX(accumPml,accumNml) > 3*VSMIN(accumPml,accumNml))
     {
         accumPm = accumPml;
         accumNm = accumNml;
     }
-    norm1 = (int)((accumPc / 6.0f) + 0.5f);
-    norm2 = (int)((accumNc / 6.0f) + 0.5f);
-    mtn1 = (int)((accumPm / 6.0f) + 0.5f);
-    mtn2 = (int)((accumNm / 6.0f) + 0.5f);
-    c1 = ((float)VSMAX(norm1,norm2))/((float)VSMAX(VSMIN(norm1,norm2),1));
-    c2 = ((float)VSMAX(mtn1,mtn2))/((float)VSMAX(VSMIN(mtn1,mtn2),1));
-    mr = ((float)VSMAX(mtn1,mtn2))/((float)VSMAX(VSMAX(norm1,norm2),1));
-    if (((mtn1 >= 500  || mtn2 >= 500)  && (mtn1*2 < mtn2*1 || mtn2*2 < mtn1*1)) ||
-        ((mtn1 >= 1000 || mtn2 >= 1000) && (mtn1*3 < mtn2*2 || mtn2*3 < mtn1*2)) ||
-        ((mtn1 >= 2000 || mtn2 >= 2000) && (mtn1*5 < mtn2*4 || mtn2*5 < mtn1*4)) ||
-        ((mtn1 >= 4000 || mtn2 >= 4000) && c2 > c1))
+    norm1 = (int64_t)((accumPc / 6.0f) + 0.5f);
+    norm2 = (int64_t)((accumNc / 6.0f) + 0.5f);
+    mtn1 = (int64_t)((accumPm / 6.0f) + 0.5f);
+    mtn2 = (int64_t)((accumNm / 6.0f) + 0.5f);
+    c1 = ((float)VSMAX(norm1,norm2))/((float)VSMAX(VSMIN(norm1,norm2),(int64_t)1));
+    c2 = ((float)VSMAX(mtn1,mtn2))/((float)VSMAX(VSMIN(mtn1,mtn2),(int64_t)1));
+    mr = ((float)VSMAX(mtn1,mtn2))/((float)VSMAX(VSMAX(norm1,norm2),(int64_t)1));
+    if (((mtn1 >= ((int64_t)500 << shift)  || mtn2 >= ((int64_t)500 << shift))  && (mtn1*2 < mtn2*1 || mtn2*2 < mtn1*1)) ||
+        ((mtn1 >= ((int64_t)1000 << shift) || mtn2 >= ((int64_t)1000 << shift)) && (mtn1*3 < mtn2*2 || mtn2*3 < mtn1*2)) ||
+        ((mtn1 >= ((int64_t)2000 << shift) || mtn2 >= ((int64_t)2000 << shift)) && (mtn1*5 < mtn2*4 || mtn2*5 < mtn1*4)) ||
+        ((mtn1 >= ((int64_t)4000 << shift) || mtn2 >= ((int64_t)4000 << shift)) && c2 > c1))
     {
         if (mtn1 > mtn2)
             ret = match2;
         else
             ret = match1;
-    } else if (mr > 0.005 && VSMAX(mtn1,mtn2) > 150 && (mtn1*2 < mtn2*1 || mtn2*2 < mtn1*1)) {
+    } else if (mr > 0.005 && VSMAX(mtn1,mtn2) > ((int64_t)150 << shift) && (mtn1*2 < mtn2*1 || mtn2*2 < mtn1*1)) {
         if (mtn1 > mtn2)
             ret = match2;
         else
@@ -582,18 +592,19 @@ static const VSFrame *createWeaveFrame(const VSFrame *prv, const VSFrame *src,
 }
 
 
-static int checkmm(int m1, int m2, int *m1mic, int *m2mic, int *blockN, int MI, int field, int chroma, int cthresh, const VSFrame **genFrames,
+template<typename T>
+static int checkmm(int m1, int m2, int *m1mic, int *m2mic, int *blockN, int MI, int field, int chroma, int cthresh, int shift, const VSFrame **genFrames,
     const VSFrame *prv, const VSFrame *src, const VSFrame *nxt, VSFrame *cmask, int *cArray, int blockx, int blocky, const VSAPI *vsapi, VSCore *core) {
     if (*m1mic < 0) {
         if (!genFrames[m1])
             genFrames[m1] = createWeaveFrame(prv, src, nxt, vsapi, core, m1, field);
-        *m1mic = calcMI(genFrames[m1], vsapi, blockN, chroma, cthresh, cmask, cArray, blockx, blocky);
+        *m1mic = calcMI<T>(genFrames[m1], vsapi, blockN, chroma, cthresh, shift, cmask, cArray, blockx, blocky);
     }
 
     if (*m2mic < 0) {
         if (!genFrames[m2])
             genFrames[m2] = createWeaveFrame(prv, src, nxt, vsapi, core, m2, field);
-        *m2mic = calcMI(genFrames[m2], vsapi, blockN, chroma, cthresh, cmask, cArray, blockx, blocky);
+        *m2mic = calcMI<T>(genFrames[m2], vsapi, blockN, chroma, cthresh, shift, cmask, cArray, blockx, blocky);
     }
 
     if (((*m2mic)*3 < *m1mic || ((*m2mic)*2 < *m1mic && *m1mic > MI)) &&
@@ -623,6 +634,9 @@ typedef enum {
     VFMFieldOppositeOfOrder
 } VFMField;
 
+template<typename T>
+static const VSFrame *vfmProcess(int n, const VFMData *vfm, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi);
+
 static const VSFrame *VS_CC vfmGetFrame(int n, int activationReason, void *instanceData, void **frameData, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
     const VFMData *vfm = (const VFMData *)instanceData;
     n = VSMIN(vfm->vi->numFrames - 1, n);
@@ -641,6 +655,15 @@ static const VSFrame *VS_CC vfmGetFrame(int n, int activationReason, void *insta
                 vsapi->requestFrameFilter(n+1, vfm->clip2, frameCtx);
         }
     } else if (activationReason == arAllFramesReady) {
+        return vsapi->getVideoInfo(vfm->node)->format.bytesPerSample == 1
+            ? vfmProcess<uint8_t>(n, vfm, frameCtx, core, vsapi)
+            : vfmProcess<uint16_t>(n, vfm, frameCtx, core, vsapi);
+    }
+    return NULL;
+}
+
+template<typename T>
+static const VSFrame *vfmProcess(int n, const VFMData *vfm, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
         const VSFrame *prv = vsapi->getFrameFilter(n > 0 ? n-1 : 0, vfm->node, frameCtx);
         const VSFrame *src = vsapi->getFrameFilter(n, vfm->node, frameCtx);
         const VSFrame *nxt = vsapi->getFrameFilter(n < vfm->vi->numFrames - 1 ? n+1 : vfm->vi->numFrames - 1, vfm->node, frameCtx);
@@ -675,13 +698,18 @@ static const VSFrame *VS_CC vfmGetFrame(int n, int activationReason, void *insta
         VSMap *m;
         int sc = 0;
         const VSVideoFormat *format = vsapi->getVideoFrameFormat(src);
+        int shift = format->bitsPerSample - 8;
         int width = vsapi->getFrameWidth(src, 0);
         int height = vsapi->getFrameHeight(src, 0);
 
-        VSFrame *map = vsapi->newVideoFrame(format, width, height, NULL, core);
-        VSFrame *cmask = vsapi->newVideoFrame(format, width, height, NULL, core);
+        // map and cmask only hold per-pixel flags/markers (one byte per sample),
+        // so they are always 8-bit regardless of the source bit depth.
+        VSVideoFormat maskfmt;
+        vsapi->queryVideoFormat(&maskfmt, format->colorFamily, stInteger, 8, format->subSamplingW, format->subSamplingH, core);
+        VSFrame *map = vsapi->newVideoFrame(&maskfmt, width, height, NULL, core);
+        VSFrame *cmask = vsapi->newVideoFrame(&maskfmt, width, height, NULL, core);
 
-        uint8_t *tbuffer = (uint8_t *)malloc((height>>1)*vfm->tpitchy*sizeof(uint8_t));
+        T *tbuffer = (T *)malloc((height>>1)*vfm->tpitchy*sizeof(T));
         int *cArray = (int *)malloc((((width+vfm->blockx/2)/vfm->blockx)+1)*(((height+vfm->blocky/2)/vfm->blocky)+1)*4*sizeof(int));
 
         // check if it's a scenechange so micmatch can be used
@@ -696,18 +724,18 @@ static const VSFrame *VS_CC vfmGetFrame(int n, int activationReason, void *insta
         }
 
         // p/c selection
-        match = compareFieldsSlow(prv, src, nxt, map, fxo[mC], fxo[mP], vfm->mchroma, field, vfm->y0, vfm->y1, tbuffer, vfm->tpitchy, vfm->tpitchuv, vsapi);
+        match = compareFieldsSlow(prv, src, nxt, map, fxo[mC], fxo[mP], vfm->mchroma, field, vfm->y0, vfm->y1, tbuffer, vfm->tpitchy, vfm->tpitchuv, shift, vsapi);
         // the mode has 3-way p/c/n matches
         if (vfm->mode >= 4)
-            match = compareFieldsSlow(prv, src, nxt, map, match, fxo[mN], vfm->mchroma, field, vfm->y0, vfm->y1, tbuffer, vfm->tpitchy, vfm->tpitchuv, vsapi);
+            match = compareFieldsSlow(prv, src, nxt, map, match, fxo[mN], vfm->mchroma, field, vfm->y0, vfm->y1, tbuffer, vfm->tpitchy, vfm->tpitchuv, shift, vsapi);
 
         genFrames[mC] = vsapi->addFrameRef(src);
 
         // calculate all values for mic output, checkmm calculates and prepares it for the two matches if not already done
         if (vfm->micout) {
-            checkmm(0, 1, &mics[0], &mics[1], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
-            checkmm(2, 3, &mics[2], &mics[3], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
-            checkmm(4, 0, &mics[4], &mics[0], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
+            checkmm<T>(0, 1, &mics[0], &mics[1], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, shift, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
+            checkmm<T>(2, 3, &mics[2], &mics[3], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, shift, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
+            checkmm<T>(4, 0, &mics[4], &mics[0], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, shift, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
         }
 
         // check the micmatches to see if one of the options are better
@@ -717,21 +745,21 @@ static const VSFrame *VS_CC vfmGetFrame(int n, int activationReason, void *insta
             // here comes the conditional hell to try to approximate mode 0-5 in tfm
             if (vfm->mode == 0) {
                 // maybe not completely appropriate but go back and see if the discarded match is less sucky
-                match = checkmm(match, match == fxo[mP] ? fxo[mC] : fxo[mP], &mics[match], &mics[match == fxo[mP] ? fxo[mC] : fxo[mP]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
+                match = checkmm<T>(match, match == fxo[mP] ? fxo[mC] : fxo[mP], &mics[match], &mics[match == fxo[mP] ? fxo[mC] : fxo[mP]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, shift, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
             } else if (vfm->mode == 1) {
-                match = checkmm(match, fxo[mN], &mics[match], &mics[fxo[mN]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
+                match = checkmm<T>(match, fxo[mN], &mics[match], &mics[fxo[mN]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, shift, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
             } else if (vfm->mode == 2) {
-                match = checkmm(match, fxo[mU], &mics[match], &mics[fxo[mU]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
+                match = checkmm<T>(match, fxo[mU], &mics[match], &mics[fxo[mU]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, shift, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
             } else if (vfm->mode == 3) {
-                match = checkmm(match, fxo[mN], &mics[match], &mics[fxo[mN]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
-                match = checkmm(match, fxo[mU], &mics[match], &mics[fxo[mU]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
-                match = checkmm(match, fxo[mB], &mics[match], &mics[fxo[mB]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
+                match = checkmm<T>(match, fxo[mN], &mics[match], &mics[fxo[mN]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, shift, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
+                match = checkmm<T>(match, fxo[mU], &mics[match], &mics[fxo[mU]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, shift, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
+                match = checkmm<T>(match, fxo[mB], &mics[match], &mics[fxo[mB]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, shift, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
             } else if (vfm->mode == 4) {
                 // degenerate check because I'm lazy
-                match = checkmm(match, match == fxo[mP] ? fxo[mC] : fxo[mP], &mics[match], &mics[match == fxo[mP] ? fxo[mC] : fxo[mP]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky,vsapi, core);
+                match = checkmm<T>(match, match == fxo[mP] ? fxo[mC] : fxo[mP], &mics[match], &mics[match == fxo[mP] ? fxo[mC] : fxo[mP]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, shift, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky,vsapi, core);
             } else if (vfm->mode == 5) {
-                match = checkmm(match, fxo[mU], &mics[match], &mics[fxo[mU]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
-                match = checkmm(match, fxo[mB], &mics[match], &mics[fxo[mB]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
+                match = checkmm<T>(match, fxo[mU], &mics[match], &mics[fxo[mU]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, shift, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
+                match = checkmm<T>(match, fxo[mB], &mics[match], &mics[fxo[mB]], &blockN, vfm->mi, field, vfm->chroma, vfm->cthresh, shift, genFrames, prv, src, nxt, cmask, &cArray[0], vfm->blockx, vfm->blocky, vsapi, core);
             }
         }
 
@@ -739,7 +767,7 @@ static const VSFrame *VS_CC vfmGetFrame(int n, int activationReason, void *insta
         if (mics[match] < 0) {
             if (!genFrames[match])
                 genFrames[match] = createWeaveFrame(prv, src, nxt, vsapi, core, match, field);
-            mics[match] = calcMI(genFrames[match], vsapi, &blockN, vfm->chroma, vfm->cthresh, cmask, cArray, vfm->blockx, vfm->blocky);
+            mics[match] = calcMI<T>(genFrames[match], vsapi, &blockN, vfm->chroma, vfm->cthresh, shift, cmask, cArray, vfm->blockx, vfm->blocky);
         }
 
         // Alternative clip handling
@@ -779,8 +807,6 @@ static const VSFrame *VS_CC vfmGetFrame(int n, int activationReason, void *insta
         vsapi->mapSetInt(m, "VFMMatch", match, maReplace);
         vsapi->mapSetInt(m, "VFMSceneChange", sc, maReplace);
         return dst2;
-    }
-    return NULL;
 }
 
 static void VS_CC vfmFree(void *instanceData, VSCore *core, const VSAPI *vsapi) {
@@ -921,14 +947,12 @@ static void VS_CC createVFM(const VSMap *in, VSMap *out, void *userData, VSCore 
     vfm.vi = vsapi->getVideoInfo(vfm.clip2 ? vfm.clip2 : vfm.node);
     vi = vsapi->getVideoInfo(vfm.node);
 
-    uint32_t formatID = vsapi->queryVideoFormatID(vi->format.colorFamily, vi->format.sampleType, vi->format.bitsPerSample, vi->format.subSamplingW, vi->format.subSamplingH, core);
-
-    if (!vsh::isConstantVideoFormat(vi) || (formatID != pfYUV420P8 &&
-        formatID != pfYUV422P8 &&
-        formatID != pfYUV440P8 &&
-        formatID != pfYUV444P8 &&
-        formatID != pfGray8)) {
-        vsapi->mapSetError(out, "VFM: input clip must be constant format YUV420P8, YUV422P8, YUV440P8, YUV444P8, or GRAY8");
+    if (!vsh::isConstantVideoFormat(vi) ||
+        (vi->format.colorFamily != cfYUV && vi->format.colorFamily != cfGray) ||
+        vi->format.sampleType != stInteger ||
+        vi->format.bitsPerSample < 8 || vi->format.bitsPerSample > 16 ||
+        vi->format.subSamplingW > 1 || vi->format.subSamplingH > 1) {
+        vsapi->mapSetError(out, "VFM: input clip must be constant format YUV or Gray, 8-16 bit integer, with subsampling of at most 1 in each dimension");
         vsapi->freeNode(vfm.node);
         vsapi->freeNode(vfm.clip2);
         return;

@@ -65,8 +65,10 @@ It is a rewrite of some of tritical's TIVTC filters.
 
    Parameters:
       clip
-         Input clip. YUV420P8, YUV422P8, YUV440P8, YUV444P8, and GRAY8
-         are supported. Must have constant format and dimensions.
+         Input clip. Gray or YUV with integer samples, 8 to 16 bits per
+         sample, and subsampling of at most 1 in each dimension (e.g. GRAY8..16,
+         YUV420P8..16, YUV422P8..16, YUV440P8..16, YUV444P8..16) are supported.
+         Must have constant format and dimensions.
 
       order
          Sets the field order of the clip. Normally the field order is
@@ -156,6 +158,9 @@ It is a rewrite of some of tritical's TIVTC filters.
          be detected. Valid settings are from -1 (every pixel will be detected
          as combed) to 255 (no pixel will be detected as combed). This is
          basically a pixel difference value. A good range is between 8 to 12.
+         The value is always given in 8-bit terms; for higher bit depth input
+         it is scaled internally so the same setting behaves the same way
+         regardless of the input's bit depth.
 
          Default: 9.
 
@@ -235,15 +240,13 @@ It is a rewrite of some of tritical's TIVTC filters.
       clip2
          Clip that VFM will use to create the output frames. If *clip2* is used,
          VFM will perform all calculations based on *clip*, but will copy the
-         chosen fields from *clip2*. This can be used to work around VFM's video
-         format limitations. For example if you have a YUV444P16 input clip::
+         chosen fields from *clip2*. This lets the match decision be computed on
+         one clip while the output pixels are taken from another -- for example,
+         matching on a lightweight or cleaned-up proxy while producing output
+         from the original::
 
-            yv12 = vs.core.resize.Bicubic(clip=original, format=vs.YUV420P8)
-            fieldmatched = vs.core.vivtc.VFM(clip=yv12, order=1, chroma=False, clip2=original)
-
-         .. note::
-            In this example chroma is ignored because the used conversion to YUV420P8
-            will not accurately preserve it.
+            proxy = vs.core.resize.Bicubic(clip=original, format=vs.YUV420P8)
+            fieldmatched = vs.core.vivtc.VFM(clip=proxy, order=1, clip2=original)
 
 .. function:: VDecimate(clip clip[, int cycle=5, bint chroma=1, float dupthresh=1.1, float scthresh=15, int blockx=32, int blocky=32, clip clip2, string ovr="", bint dryrun=0])
    :module: vivtc
