@@ -68,7 +68,7 @@ static void copyField(VSFrame *dst, const VSFrame *src, int field, const VSAPI *
     const VSVideoFormat *fi = vsapi->getVideoFrameFormat(src);
     int plane;
     for (plane=0; plane<fi->numPlanes; plane++) {
-        vsh_bitblt(vsapi->getWritePtr(dst, plane)+field*vsapi->getStride(dst, plane),vsapi->getStride(dst, plane)*2,
+        vsh::bitblt(vsapi->getWritePtr(dst, plane)+field*vsapi->getStride(dst, plane),vsapi->getStride(dst, plane)*2,
             vsapi->getReadPtr(src, plane)+field*vsapi->getStride(src, plane),vsapi->getStride(src, plane)*2,
             vsapi->getFrameWidth(src, plane)*fi->bytesPerSample,vsapi->getFrameHeight(src,plane)/2);
     }
@@ -923,7 +923,7 @@ static void VS_CC createVFM(const VSMap *in, VSMap *out, void *userData, VSCore 
 
     uint32_t formatID = vsapi->queryVideoFormatID(vi->format.colorFamily, vi->format.sampleType, vi->format.bitsPerSample, vi->format.subSamplingW, vi->format.subSamplingH, core);
 
-    if (!vsh_isConstantVideoFormat(vi) || (formatID != pfYUV420P8 &&
+    if (!vsh::isConstantVideoFormat(vi) || (formatID != pfYUV420P8 &&
         formatID != pfYUV422P8 &&
         formatID != pfYUV440P8 &&
         formatID != pfYUV444P8 &&
@@ -934,7 +934,7 @@ static void VS_CC createVFM(const VSMap *in, VSMap *out, void *userData, VSCore 
         return;
     }
 
-    if (vi->numFrames != vfm.vi->numFrames || !vsh_isConstantVideoFormat(vfm.vi)) {
+    if (vi->numFrames != vfm.vi->numFrames || !vsh::isConstantVideoFormat(vfm.vi)) {
         vsapi->mapSetError(out, "VFM: the number of frames must be the same in both input clips and clip2 must be constant format");
         vsapi->freeNode(vfm.node);
         vsapi->freeNode(vfm.clip2);
@@ -1071,7 +1071,7 @@ static void freeCache(CycleCache *cache) {
     cache->size = 0;
 }
 
-CycleInfo *getCycleFromCache(int cycleNum, CycleCache *cache, VDecimateData *vdm) {
+static CycleInfo *getCycleFromCache(int cycleNum, CycleCache *cache, VDecimateData *vdm) {
     int index = -1;
 
     // Find the requested cycle.
@@ -1185,7 +1185,7 @@ static int vdecimateLoadOVR(const char *ovrfile, signed char *drop, int cycle, i
     int len, ret;
     wchar_t *ovrfile_wc;
     len = MultiByteToWideChar(CP_UTF8, 0, ovrfile, -1, NULL, 0);
-    ovrfile_wc = malloc(len * sizeof(wchar_t));
+    ovrfile_wc = (wchar_t *)malloc(len * sizeof(wchar_t));
     if (ovrfile_wc) {
         ret = MultiByteToWideChar(CP_UTF8, 0, ovrfile, -1, ovrfile_wc, len);
         if (ret == len)
@@ -1302,7 +1302,7 @@ static inline signed char findDropFrame(VDInfo *metrics, int cycleLength, int64_
 
 static void calculateNewDurations(const FrameDuration *oldDurations, FrameDuration *newDurations, int cycleLength, int drop) {
     FrameDuration dropDuration = oldDurations[drop];
-    FrameDuration cycleDuration = { .num = 0, .den = 1 };
+    FrameDuration cycleDuration = { 0, 1 };
     int missingDurations = 0;
 
     for (int i = 0; i < cycleLength; i++)
@@ -1319,7 +1319,7 @@ static void calculateNewDurations(const FrameDuration *oldDurations, FrameDurati
 
     for (int i = 0; i < cycleLength; i++) {
         if (i != drop) {
-            vsh_addRational(&cycleDuration.num, &cycleDuration.den, oldDurations[i].num, oldDurations[i].den);
+            vsh::addRational(&cycleDuration.num, &cycleDuration.den, oldDurations[i].num, oldDurations[i].den);
         }
     }
 
@@ -1329,9 +1329,9 @@ static void calculateNewDurations(const FrameDuration *oldDurations, FrameDurati
 
         // newDuration = oldDuration / cycleDuration * dropDuration + oldDuration
         *newDurations = *oldDurations;
-        vsh_muldivRational(&newDurations->num, &newDurations->den, cycleDuration.den, cycleDuration.num);
-        vsh_muldivRational(&newDurations->num, &newDurations->den, dropDuration.num, dropDuration.den);
-        vsh_addRational(&newDurations->num, &newDurations->den, oldDurations->num, oldDurations->den);
+        vsh::muldivRational(&newDurations->num, &newDurations->den, cycleDuration.den, cycleDuration.num);
+        vsh::muldivRational(&newDurations->num, &newDurations->den, dropDuration.num, dropDuration.den);
+        vsh::addRational(&newDurations->num, &newDurations->den, oldDurations->num, oldDurations->den);
 
         newDurations++;
         oldDurations++;
@@ -1513,7 +1513,7 @@ static void VS_CC createVDecimate(const VSMap *in, VSMap *out, void *userData, V
     vdm.vi = *vsapi->getVideoInfo(vdm.clip2 ? vdm.clip2 : vdm.node);
 
     const VSVideoInfo *vi = vsapi->getVideoInfo(vdm.node);
-    if (!vsh_isConstantVideoFormat(vi) || vi->format.bitsPerSample > 16 || vi->format.sampleType != stInteger) {
+    if (!vsh::isConstantVideoFormat(vi) || vi->format.bitsPerSample > 16 || vi->format.sampleType != stInteger) {
         vsapi->mapSetError(out, "VDecimate: input clip must be constant format, with 8..16 bits per sample");
         vsapi->freeNode(vdm.node);
         vsapi->freeNode(vdm.clip2);
@@ -1586,7 +1586,7 @@ static void VS_CC createVDecimate(const VSMap *in, VSMap *out, void *userData, V
         vdm.vi.numFrames *= vdm.outCycle;
         vdm.vi.numFrames += vdm.tail;
         if (vdm.vi.fpsNum && vdm.vi.fpsDen)
-            vsh_muldivRational(&vdm.vi.fpsNum, &vdm.vi.fpsDen, vdm.outCycle, vdm.inCycle);
+            vsh::muldivRational(&vdm.vi.fpsNum, &vdm.vi.fpsDen, vdm.outCycle, vdm.inCycle);
     }
 
     initCache(&vdm.cache, &vdm);

@@ -1,5 +1,5 @@
-project('VIVTC', 'c',
-    default_options: ['buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'c_std=c99'],
+project('VIVTC', 'cpp',
+    default_options: ['buildtype=release', 'warning_level=2', 'b_lto=true', 'b_ndebug=if-release', 'cpp_std=c++17'],
     license: 'LGPL-2.1-or-later',
     license_files: 'LICENSE',
     meson_version: '>=1.2.3',
@@ -18,7 +18,7 @@ incdir = include_directories(
 py = import('python').find_installation(pure: false)
 
 shared_module('vivtc',
-    files('src/vivtc.c'),
+    files('src/vivtc.cpp'),
     gnu_symbol_visibility: 'hidden',
     include_directories: incdir,
     install: true,
