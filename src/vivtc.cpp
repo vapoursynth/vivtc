@@ -1136,15 +1136,16 @@ static CycleInfo *getCycleFromCache(int cycleNum, CycleCache *cache, VDecimateDa
     return cycle;
 }
 
+template<typename T>
 static int64_t calcMetric(const VSFrame *f1, const VSFrame *f2, int64_t *totdiff, VDecimateData *vdm, const VSAPI *vsapi) {
     int64_t *bdiffs = vdm->bdiffs;
     int numplanes = vdm->chroma ? 3 : 1;
     int64_t maxdiff = -1;
     memset(bdiffs, 0, vdm->bdiffsize * sizeof(int64_t));
     for (int plane = 0; plane < numplanes; plane++) {
-        ptrdiff_t stride = vsapi->getStride(f1, plane);
-        const uint8_t *f1p = vsapi->getReadPtr(f1, plane);
-        const uint8_t *f2p = vsapi->getReadPtr(f2, plane);
+        ptrdiff_t stride = vsapi->getStride(f1, plane) / (ptrdiff_t)sizeof(T);
+        const T *f1p = (const T *)vsapi->getReadPtr(f1, plane);
+        const T *f2p = (const T *)vsapi->getReadPtr(f2, plane);
         const VSVideoFormat *fi = vsapi->getVideoFrameFormat(f1);
 
         int width = vsapi->getFrameWidth(f1, plane);
@@ -1161,25 +1162,13 @@ static int64_t calcMetric(const VSFrame *f1, const VSFrame *f2, int64_t *totdiff
         for (int y = 0; y < height; y++) {
             int ydest = y / hblocky;
             int xdest = 0;
-            // some slight code duplication to not put an if statement for 8/16 bit processing in the inner loop
-            if (fi->bitsPerSample == 8) {
-                for (int x = 0; x < width; x+= hblockx) {
-                    int acc = 0;
-                    int m = VSMIN(width, x + hblockx);
-                    for (int xl = x; xl < m; xl++)
-                        acc += abs(f1p[xl] - f2p[xl]);
-                    bdiffs[ydest * nxblocks + xdest] += acc;
-                    xdest++;
-                }
-            } else {
-                for (int x = 0; x < width; x+= hblockx) {
-                    int acc = 0;
-                    int m = VSMIN(width, x + hblockx);
-                    for (int xl = x; xl < m; xl++)
-                        acc += abs(((const uint16_t *)f1p)[xl] - ((const uint16_t *)f2p)[xl]);
-                    bdiffs[ydest * nxblocks + xdest] += acc;
-                    xdest++;
-                }
+            for (int x = 0; x < width; x+= hblockx) {
+                int acc = 0;
+                int m = VSMIN(width, x + hblockx);
+                for (int xl = x; xl < m; xl++)
+                    acc += abs(f1p[xl] - f2p[xl]);
+                bdiffs[ydest * nxblocks + xdest] += acc;
+                xdest++;
             }
             f1p += stride;
             f2p += stride;
@@ -1422,7 +1411,9 @@ static const VSFrame *VS_CC vdecimateGetFrame(int n, int activationReason, void 
             for (int i = cyclestart; i < cycleend; i++) {
                 const VSFrame *prv = vsapi->getFrameFilter(VSMAX(i - 1, 0), vdm->node, frameCtx);
                 const VSFrame *cur = vsapi->getFrameFilter(i, vdm->node, frameCtx);
-                cycle->metrics[i - cyclestart].maxbdiff = calcMetric(prv, cur, &cycle->metrics[i - cyclestart].totdiff, vdm, vsapi);
+                cycle->metrics[i - cyclestart].maxbdiff = vsapi->getVideoInfo(vdm->node)->format.bytesPerSample == 1
+                    ? calcMetric<uint8_t>(prv, cur, &cycle->metrics[i - cyclestart].totdiff, vdm, vsapi)
+                    : calcMetric<uint16_t>(prv, cur, &cycle->metrics[i - cyclestart].totdiff, vdm, vsapi);
                 vsapi->freeFrame(prv);
                 vsapi->freeFrame(cur);
             }
