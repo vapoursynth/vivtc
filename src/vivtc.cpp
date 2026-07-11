@@ -68,9 +68,13 @@ static void copyField(VSFrame *dst, const VSFrame *src, int field, const VSAPI *
     const VSVideoFormat *fi = vsapi->getVideoFrameFormat(src);
     int plane;
     for (plane=0; plane<fi->numPlanes; plane++) {
+        // Rows of this field's parity: ceil((height - field) / 2). For odd plane
+        // heights the top field (field 0) has one more row than height/2, which
+        // would otherwise be left uninitialized in the woven frame.
+        int rows = (vsapi->getFrameHeight(src, plane) - field + 1) / 2;
         vsh::bitblt(vsapi->getWritePtr(dst, plane)+field*vsapi->getStride(dst, plane),vsapi->getStride(dst, plane)*2,
             vsapi->getReadPtr(src, plane)+field*vsapi->getStride(src, plane),vsapi->getStride(src, plane)*2,
-            vsapi->getFrameWidth(src, plane)*fi->bytesPerSample,vsapi->getFrameHeight(src,plane)/2);
+            vsapi->getFrameWidth(src, plane)*fi->bytesPerSample,rows);
     }
 }
 
