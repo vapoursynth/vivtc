@@ -3,7 +3,7 @@ project('VIVTC', 'cpp',
     license: 'LGPL-2.1-or-later',
     license_files: 'LICENSE',
     meson_version: '>=1.2.3',
-    version: '2.0',
+    version: '3.0',
 )
 
 incdir = include_directories(
